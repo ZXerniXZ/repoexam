@@ -1,0 +1,19 @@
+# File di configurazione con credenziali
+.env
+
+# Immagini di debug
+last_capture.jpg
+*.jpg
+*.png
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+
