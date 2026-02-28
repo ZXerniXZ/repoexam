@@ -972,10 +972,11 @@ class ScreenROIDetector:
                     cur = self._button.is_pressed
                     s = state_ref[0]
                     if s == "WAIT_FOR_PRESS":
-                        if cur and not last_pressed:
-                            state_ref[0] = "ARMED"
-                    elif s == "ARMED":
                         if not cur and last_pressed:
+                            state_ref[0] = "ARMED"
+                            print("[PULSANTE] Premuto (segnale perso) → armato.", flush=True)
+                    elif s == "ARMED":
+                        if cur and not last_pressed:
                             state_ref[0] = "RUNNING"
                             start_capture_on_release()
                     # RUNNING: il thread imposterà WAIT_FOR_PRESS quando ha finito
