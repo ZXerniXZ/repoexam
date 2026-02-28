@@ -2,14 +2,10 @@
 """
 Screen ROI Detector
 ===================
-Connects to IP Webcam, captures a frame on Enter press,
-automatically detects the PC screen and saves the image with the ROI drawn.
-
-Flow:
-  1. Press ENTER → captures a shot from IP Webcam
-  2. Auto-detects the screen using edge detection + contour analysis
-  3. Draws the ROI on the image and saves it as last_capture.jpg
-  4. Applies perspective correction and saves screen_cropped.jpg
+Connects to IP Webcam, captures a frame on Enter press or hardware button,
+detects the PC screen and saves the image with the ROI drawn.
+Optional: GPIO button (27) to trigger capture; motor (17) for haptic feedback
+(1 buzz = photo taken, N buzzes = answer 1–4).
 """
 
 
@@ -17,12 +13,22 @@ import cv2
 import numpy as np
 import sys
 import time
+import threading
 import requests
 import base64
 import json
 import os
 import re
 from dotenv import load_dotenv
+
+# Optional GPIO (Raspberry Pi): motor + button for capture and haptic feedback
+try:
+    from gpiozero import OutputDevice, Button
+    _GPIO_AVAILABLE = True
+except Exception:
+    OutputDevice = None
+    Button = None
+    _GPIO_AVAILABLE = False
 
 # Load environment variables
 load_dotenv()
@@ -31,6 +37,13 @@ load_dotenv()
 IP_WEBCAM_IP   = "10.120.251.23"
 IP_WEBCAM_PORT = 8080
 SHOT_URL = f"http://{IP_WEBCAM_IP}:{IP_WEBCAM_PORT}/shot.jpg"
+
+# ── GPIO (vibrazione + pulsante) ────────────────────────────────────
+MOTOR_GPIO = 17
+BUTTON_GPIO = 27
+VIBE_CONFIRM_S = 0.15
+VIBE_ON_S = 0.15
+VIBE_OFF_S = 0.25
 
 # ── OpenRouter configuration ─────────────────────────────────────────
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "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")
@@ -74,6 +87,8 @@ class ScreenROIDetector:
         self.roi: np.ndarray | None = None
         self.canny_low  = CANNY_LOW
         self.canny_high = CANNY_HIGH
+        self._motor = None
+        self._button = None
         
         # Text enhancement parameters
         self.enhance_enabled = ENHANCE_ENABLED
@@ -596,6 +611,110 @@ class ScreenROIDetector:
                     print(f"    Body: {e.response.text[:500]}")
             return None
 
+    # ── Vibrazione (conferma foto + risultato 1–4) ───────────────────
+    def _vibrate_once(self):
+        """Una breve vibrazione per confermare che la foto è stata scattata."""
+        if self._motor is None:
+            return
+        try:
+            self._motor.on()
+            time.sleep(VIBE_CONFIRM_S)
+            self._motor.off()
+        except Exception:
+            pass
+
+    def _vibrate_n_times(self, n: int):
+        """N vibrazioni brevi (risultato 1–4)."""
+        if self._motor is None or n not in (1, 2, 3, 4):
+            return
+        try:
+            for i in range(n):
+                self._motor.on()
+                time.sleep(VIBE_ON_S)
+                self._motor.off()
+                if i < n - 1:
+                    time.sleep(VIBE_OFF_S)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _parse_result_count(result: str | None) -> int | None:
+        """Estrae un numero 1–4 dalla risposta OpenRouter."""
+        if not result or not result.strip():
+            return None
+        s = result.strip()
+        numbers = re.findall(r'\b([1-4])\b', s)
+        if numbers:
+            return int(numbers[-1])
+        try:
+            n = int(s)
+            return n if 1 <= n <= 4 else None
+        except ValueError:
+            return None
+
+    def _do_capture_and_analyze(self):
+        """
+        Cattura, rileva schermo, salva, vibra una volta, analizza con OpenRouter,
+        poi vibra N volte in base alla risposta (1–4).
+        """
+        print(f"[...] Cattura da {self.shot_url} ...")
+        frame = self.capture()
+        if frame is None:
+            print("[ERROR] Impossibile catturare. Controlla IP Webcam.")
+            return
+
+        print(f"[OK] Frame catturato: {frame.shape[1]}x{frame.shape[0]}")
+
+        box = self.detect_screen(frame)
+        if box is not None:
+            self.roi = self._order_points(box)
+
+            if not self._validate_corners(self.roi):
+                print("[!] ROI non valida (corner duplicati).")
+                cv2.imwrite("last_capture.jpg", frame)
+                self._vibrate_once()
+                return
+
+            print("[OK] Schermo rilevato! Coordinate ROI:")
+            labels = ["Top-Left", "Top-Right", "Bottom-Right", "Bottom-Left"]
+            for label, pt in zip(labels, self.roi):
+                print(f"     {label}: ({pt[0]}, {pt[1]})")
+
+            output = self._draw_roi(frame.copy(), self.roi)
+            cv2.imwrite("last_capture.jpg", output)
+            print("[SAVE] Immagine con ROI → last_capture.jpg")
+
+            warped = self._warp_perspective(frame, self.roi)
+            if self.enhance_enabled:
+                print("[ENHANCE] Applicazione miglioramento testo...")
+                enhanced = self.enhance_text(warped)
+                cv2.imwrite("screen_cropped.jpg", enhanced)
+                print(f"[SAVE] Schermo raddrizzato + enhanced ({enhanced.shape[1]}x{enhanced.shape[0]}) → screen_cropped.jpg")
+            else:
+                cv2.imwrite("screen_cropped.jpg", warped)
+                print(f"[SAVE] Schermo raddrizzato ({warped.shape[1]}x{warped.shape[0]}) → screen_cropped.jpg")
+
+            self._vibrate_once()
+
+            result = self.analyze_with_openrouter("screen_cropped.jpg")
+            if result:
+                print()
+                print("  ╔══════════════════════════════════════════════╗")
+                print(f"  ║  RISPOSTA:  {result:<34}║")
+                print("  ╚══════════════════════════════════════════════╝")
+                print()
+                n = self._parse_result_count(result)
+                if n is not None:
+                    self._vibrate_n_times(n)
+            else:
+                print("[!] Analisi OpenRouter fallita.")
+        else:
+            self.roi = None
+            cv2.imwrite("last_capture.jpg", frame)
+            print("[!] Schermo non rilevato. Immagine salvata senza ROI → last_capture.jpg")
+            print("    Prova +/- per regolare la sensibilità.")
+            self._vibrate_once()
+
     # ── Perspective correction ──────────────────────────────────────
     @staticmethod
     def _warp_perspective(frame: np.ndarray, roi: np.ndarray) -> np.ndarray:
@@ -776,11 +895,41 @@ class ScreenROIDetector:
 
     # ── Main loop ───────────────────────────────────────────────────
     def run(self):
+        if _GPIO_AVAILABLE:
+            try:
+                self._motor = OutputDevice(MOTOR_GPIO)
+                self._button = Button(BUTTON_GPIO)
+                print("[GPIO] Pulsante e motore inizializzati (pin {} e {})".format(BUTTON_GPIO, MOTOR_GPIO))
+            except Exception as e:
+                print("[GPIO] Non disponibile:", e)
+                self._motor = None
+                self._button = None
+        else:
+            self._motor = None
+            self._button = None
+
+        capture_lock = threading.Lock()
+
+        def on_button_pressed():
+            if not capture_lock.acquire(blocking=False):
+                print("[!] Cattura già in corso, ignoro.")
+                return
+            def run_capture():
+                try:
+                    self._do_capture_and_analyze()
+                finally:
+                    capture_lock.release()
+            t = threading.Thread(target=run_capture, daemon=True)
+            t.start()
+
+        if self._button is not None:
+            self._button.when_pressed = on_button_pressed
+
         print()
         print("╔═════════════════════════════════════════════════════╗")
-        print("║          Screen ROI Detector  v1.4                  ║")
+        print("║          Screen ROI Detector  v1.5                  ║")
         print("╠═════════════════════════════════════════════════════╣")
-        print("║  ENTER  → Cattura + rileva + analizza con AI        ║")
+        print("║  PULSANTE o ENTER → Cattura + vibra + analizza AI   ║")
         print("║  +/-    → Regola sensibilità Canny                  ║")
         print("║  e      → Mostra parametri enhancement              ║")
         print("║  m      → Modifica parametri enhancement            ║")
@@ -825,65 +974,18 @@ class ScreenROIDetector:
                 print(f"[CANNY] {self.canny_low} / {self.canny_high}")
                 continue
 
-            # ── ENTER → capture + detect + warp + save ────────────────
-            print(f"[...] Cattura da {self.shot_url} ...")
-            frame = self.capture()
-            if frame is None:
-                print("[ERROR] Impossibile catturare. Controlla IP Webcam.")
-                continue
+            # ── ENTER → capture + detect + warp + save + vibra + analizza ─
+            capture_lock.acquire()
+            try:
+                self._do_capture_and_analyze()
+            finally:
+                capture_lock.release()
 
-            print(f"[OK] Frame catturato: {frame.shape[1]}x{frame.shape[0]}")
-
-            # Detect screen
-            box = self.detect_screen(frame)
-            if box is not None:
-                self.roi = self._order_points(box)
-                
-                # Validate final ROI
-                if not self._validate_corners(self.roi):
-                    print("[!] ROI non valida (corner duplicati).")
-                    cv2.imwrite("last_capture.jpg", frame)
-                    continue
-
-                print("[OK] Schermo rilevato! Coordinate ROI:")
-                labels = ["Top-Left", "Top-Right", "Bottom-Right", "Bottom-Left"]
-                for label, pt in zip(labels, self.roi):
-                    print(f"     {label}: ({pt[0]}, {pt[1]})")
-
-                # 1. Save original with ROI drawn
-                output = self._draw_roi(frame.copy(), self.roi)
-                cv2.imwrite("last_capture.jpg", output)
-                print("[SAVE] Immagine con ROI → last_capture.jpg")
-
-                # 2. Perspective correction: warp
-                warped = self._warp_perspective(frame, self.roi)
-                
-                # 3. Apply text enhancement if enabled
-                if self.enhance_enabled:
-                    print("[ENHANCE] Applicazione miglioramento testo...")
-                    enhanced = self.enhance_text(warped)
-                    cv2.imwrite("screen_cropped.jpg", enhanced)
-                    print(f"[SAVE] Schermo raddrizzato + enhanced ({enhanced.shape[1]}x{enhanced.shape[0]}) → screen_cropped.jpg")
-                else:
-                    cv2.imwrite("screen_cropped.jpg", warped)
-                    print(f"[SAVE] Schermo raddrizzato ({warped.shape[1]}x{warped.shape[0]}) → screen_cropped.jpg")
-                
-                # 4. Analyze with OpenRouter
-                result = self.analyze_with_openrouter("screen_cropped.jpg")
-                if result:
-                    print()
-                    print("  ╔══════════════════════════════════════════════╗")
-                    print(f"  ║  RISPOSTA:  {result:<34}║")
-                    print("  ╚══════════════════════════════════════════════╝")
-                    print()
-                else:
-                    print("[!] Analisi OpenRouter fallita.")
-            else:
-                self.roi = None
-                cv2.imwrite("last_capture.jpg", frame)
-                print("[!] Schermo non rilevato. Immagine salvata senza ROI → last_capture.jpg")
-                print("    Prova +/- per regolare la sensibilità.")
-
+        if self._motor is not None:
+            try:
+                self._motor.close()
+            except Exception:
+                pass
         print("[INFO] Chiuso.")
 
 
