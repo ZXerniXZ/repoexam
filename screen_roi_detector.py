@@ -246,9 +246,9 @@ class ScreenROIDetector:
 
         corners = np.zeros((4, 2), dtype=np.int32)
         corners[0] = hull_pts[np.argmin(s)].astype(np.int32)   # top-left
-        corners[1] = hull_pts[np.argmin(d)].astype(np.int32)   # top-right
+        corners[1] = hull_pts[np.argmax(d)].astype(np.int32)   # top-right
         corners[2] = hull_pts[np.argmax(s)].astype(np.int32)   # bottom-right
-        corners[3] = hull_pts[np.argmax(d)].astype(np.int32)   # bottom-left
+        corners[3] = hull_pts[np.argmin(d)].astype(np.int32)   # bottom-left
 
         # Validate corners
         if not ScreenROIDetector._validate_corners(corners):
@@ -339,8 +339,8 @@ class ScreenROIDetector:
         rect[2] = pts[np.argmax(s)].astype(np.int32)   # bottom-right: largest  x+y
         
         d = pts[:, 0] - pts[:, 1]     # x - y
-        rect[1] = pts[np.argmin(d)].astype(np.int32)   # top-right:    smallest x-y
-        rect[3] = pts[np.argmax(d)].astype(np.int32)   # bottom-left:  largest  x-y
+        rect[1] = pts[np.argmax(d)].astype(np.int32)   # top-right:    largest  x-y
+        rect[3] = pts[np.argmin(d)].astype(np.int32)   # bottom-left:  smallest x-y
         
         return rect
 
