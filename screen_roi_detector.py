@@ -45,11 +45,9 @@ BUTTON_GPIO = 27
 VIBE_CONFIRM_S = 0.15
 VIBE_ON_S = 0.15
 VIBE_OFF_S = 0.25
-# Pulsante invertito: True = trigger quando is_pressed diventa True (premuto),
-# False = trigger quando is_pressed diventa False (rilasciato)
-BUTTON_TRIGGER_ON_PRESSED = True
-# Secondi di attesa prima di accettare un nuovo trigger (anti-rimbalzo)
-BUTTON_DEBOUNCE_S = 2.0
+# Workflow: si avvia al RILASCIO del pulsante; si può ricatturare solo dopo che
+# l'analisi OpenRouter è terminata E l'utente ha premuto di nuovo (arm) e rilasciato.
+# (Nessun debounce extra: la sequenza premuto→rilasciato→run→premuto→rilasciato è già robusta.)
 
 # ── OpenRouter configuration ─────────────────────────────────────────
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "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")
@@ -915,24 +913,27 @@ class ScreenROIDetector:
             self._button = None
 
         capture_lock = threading.Lock()
+        # Stato visibile dal thread di capture (per riarmare solo a run finita)
+        state_ref = ["WAIT_FOR_PRESS"]  # WAIT_FOR_PRESS | ARMED | RUNNING
 
-        def on_button_pressed():
-            print("[DEBUG] Pulsante premuto!", flush=True)
+        def run_capture_and_then_wait_for_press():
+            try:
+                self._do_capture_and_analyze()
+            finally:
+                capture_lock.release()
+                state_ref[0] = "WAIT_FOR_PRESS"
+
+        def start_capture_on_release():
             if not capture_lock.acquire(blocking=False):
-                print("[!] Cattura già in corso, ignoro.")
                 return
-            def run_capture():
-                try:
-                    self._do_capture_and_analyze()
-                finally:
-                    capture_lock.release()
-            t = threading.Thread(target=run_capture, daemon=True)
+            print("[PULSANTE] Rilascio rilevato → avvio cattura e analisi.", flush=True)
+            t = threading.Thread(target=run_capture_and_then_wait_for_press, daemon=True)
             t.start()
 
         if self._button is not None:
-            self._button.when_pressed = on_button_pressed
+            self._button.when_pressed = lambda: None
             print("[GPIO] Stato pulsante all'avvio (is_pressed):", self._button.is_pressed, flush=True)
-            print("[GPIO] Trigger su:", "premuto" if BUTTON_TRIGGER_ON_PRESSED else "rilasciato", flush=True)
+            print("[GPIO] Workflow: trigger al RILASCIO; riarmo dopo fine analisi + nuova PREMUTA.", flush=True)
 
         print()
         print("╔═════════════════════════════════════════════════════╗")
@@ -954,14 +955,12 @@ class ScreenROIDetector:
             print("  ⚠ OpenRouter non configurato (manca OPENROUTER_API_KEY nel .env)")
         print()
 
-        last_trigger_state = False
-        last_trigger_time = 0.0
+        last_pressed = False if self._button is None else self._button.is_pressed
         need_prompt = True
         while True:
             if need_prompt:
                 print("[>>] Premi ENTER per catturare (q=esci): ", end="", flush=True)
                 need_prompt = False
-            # Input non bloccante: attendi max 0.2s e controlla anche il pulsante (polling)
             if select.select([sys.stdin], [], [], 0.2)[0]:
                 try:
                     cmd = sys.stdin.readline().strip().lower()
@@ -971,12 +970,16 @@ class ScreenROIDetector:
                 cmd = None
                 if self._button is not None:
                     cur = self._button.is_pressed
-                    active = cur if BUTTON_TRIGGER_ON_PRESSED else (not cur)
-                    now = time.time()
-                    if active and not last_trigger_state and (now - last_trigger_time) >= BUTTON_DEBOUNCE_S:
-                        on_button_pressed()
-                        last_trigger_time = now
-                    last_trigger_state = active
+                    s = state_ref[0]
+                    if s == "WAIT_FOR_PRESS":
+                        if cur and not last_pressed:
+                            state_ref[0] = "ARMED"
+                    elif s == "ARMED":
+                        if not cur and last_pressed:
+                            state_ref[0] = "RUNNING"
+                            start_capture_on_release()
+                    # RUNNING: il thread imposterà WAIT_FOR_PRESS quando ha finito
+                    last_pressed = cur
                 if cmd is None:
                     continue
 
@@ -986,8 +989,6 @@ class ScreenROIDetector:
             elif cmd == "e":
                 self.show_enhance_params()
                 need_prompt = True
-                continue
-                self.show_enhance_params()
                 continue
 
             elif cmd == "m":
