@@ -898,7 +898,7 @@ class ScreenROIDetector:
         if _GPIO_AVAILABLE:
             try:
                 self._motor = OutputDevice(MOTOR_GPIO)
-                self._button = Button(BUTTON_GPIO)
+                self._button = Button(BUTTON_GPIO, pull_up=False)
                 print("[GPIO] Pulsante e motore inizializzati (pin {} e {})".format(BUTTON_GPIO, MOTOR_GPIO))
             except Exception as e:
                 print("[GPIO] Non disponibile:", e)
