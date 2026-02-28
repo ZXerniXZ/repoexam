@@ -9,8 +9,8 @@ print("Premi il pulsante per far vibrare il motore!")
 print("Rilascialo per fermarlo. Premi Ctrl+C per chiudere il programma.")
 
 # Colleghiamo gli eventi del pulsante direttamente ai comandi del motore
-pulsante.when_pressed = motore.on
-pulsante.when_released = motore.off
+pulsante.when_pressed = motore.off
+pulsante.when_released = motore.on
 
 try:
     # La funzione pause() mette il programma in "attesa infinita"
