@@ -19,6 +19,7 @@ import base64
 import json
 import os
 import re
+import select
 from dotenv import load_dotenv
 
 # Optional GPIO (Raspberry Pi): motor + button for capture and haptic feedback
@@ -44,6 +45,9 @@ BUTTON_GPIO = 27
 VIBE_CONFIRM_S = 0.15
 VIBE_ON_S = 0.15
 VIBE_OFF_S = 0.25
+# Pulsante invertito: True = trigger quando is_pressed diventa True (premuto),
+# False = trigger quando is_pressed diventa False (rilasciato)
+BUTTON_TRIGGER_ON_PRESSED = True
 
 # ── OpenRouter configuration ─────────────────────────────────────────
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "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")
@@ -925,9 +929,8 @@ class ScreenROIDetector:
 
         if self._button is not None:
             self._button.when_pressed = on_button_pressed
-            # Se con il pulsante non succede nulla, prova a usare when_released
-            # (commenta la riga sopra e decommenta la prossima):
-            # self._button.when_released = on_button_pressed
+            print("[GPIO] Stato pulsante all'avvio (is_pressed):", self._button.is_pressed, flush=True)
+            print("[GPIO] Trigger su:", "premuto" if BUTTON_TRIGGER_ON_PRESSED else "rilasciato", flush=True)
 
         print()
         print("╔═════════════════════════════════════════════════════╗")
@@ -949,33 +952,56 @@ class ScreenROIDetector:
             print("  ⚠ OpenRouter non configurato (manca OPENROUTER_API_KEY nel .env)")
         print()
 
+        last_trigger_state = False
+        need_prompt = True
         while True:
-            try:
-                cmd = input("[>>] Premi ENTER per catturare (q=esci): ").strip().lower()
-            except (EOFError, KeyboardInterrupt):
-                break
+            if need_prompt:
+                print("[>>] Premi ENTER per catturare (q=esci): ", end="", flush=True)
+                need_prompt = False
+            # Input non bloccante: attendi max 0.2s e controlla anche il pulsante (polling)
+            if select.select([sys.stdin], [], [], 0.2)[0]:
+                try:
+                    cmd = sys.stdin.readline().strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    break
+            else:
+                cmd = None
+                if self._button is not None:
+                    cur = self._button.is_pressed
+                    active = cur if BUTTON_TRIGGER_ON_PRESSED else (not cur)
+                    if active and not last_trigger_state:
+                        on_button_pressed()
+                    last_trigger_state = active
+                if cmd is None:
+                    continue
 
             if cmd == "q":
                 break
 
             elif cmd == "e":
                 self.show_enhance_params()
+                need_prompt = True
+                continue
+                self.show_enhance_params()
                 continue
 
             elif cmd == "m":
                 self.modify_enhance_params()
+                need_prompt = True
                 continue
 
             elif cmd in ("+", "="):
                 self.canny_low  = min(self.canny_low + 5, 200)
                 self.canny_high = min(self.canny_high + 10, 400)
                 print(f"[CANNY] {self.canny_low} / {self.canny_high}")
+                need_prompt = True
                 continue
 
             elif cmd in ("-", "_"):
                 self.canny_low  = max(self.canny_low - 5, 5)
                 self.canny_high = max(self.canny_high - 10, 20)
                 print(f"[CANNY] {self.canny_low} / {self.canny_high}")
+                need_prompt = True
                 continue
 
             # ── ENTER → capture + detect + warp + save + vibra + analizza ─
@@ -984,6 +1010,7 @@ class ScreenROIDetector:
                 self._do_capture_and_analyze()
             finally:
                 capture_lock.release()
+            need_prompt = True
 
         if self._motor is not None:
             try:
