@@ -898,7 +898,7 @@ class ScreenROIDetector:
         if _GPIO_AVAILABLE:
             try:
                 self._motor = OutputDevice(MOTOR_GPIO)
-                self._button = Button(BUTTON_GPIO, pull_up=False)
+                self._button = Button(BUTTON_GPIO, pull_up=True)
                 print("[GPIO] Pulsante e motore inizializzati (pin {} e {})".format(BUTTON_GPIO, MOTOR_GPIO))
             except Exception as e:
                 print("[GPIO] Non disponibile:", e)
@@ -911,6 +911,7 @@ class ScreenROIDetector:
         capture_lock = threading.Lock()
 
         def on_button_pressed():
+            print("[DEBUG] Pulsante premuto!", flush=True)
             if not capture_lock.acquire(blocking=False):
                 print("[!] Cattura già in corso, ignoro.")
                 return
@@ -924,6 +925,9 @@ class ScreenROIDetector:
 
         if self._button is not None:
             self._button.when_pressed = on_button_pressed
+            # Se con il pulsante non succede nulla, prova a usare when_released
+            # (commenta la riga sopra e decommenta la prossima):
+            # self._button.when_released = on_button_pressed
 
         print()
         print("╔═════════════════════════════════════════════════════╗")
