@@ -1,25 +1,21 @@
-from gpiozero import OutputDevice
-from time import sleep
+from gpiozero import OutputDevice, Button
+from signal import pause
 
-# Indichiamo che il segnale (IN) è collegato al GPIO 17
+# Configuriamo i pin
 motore = OutputDevice(17)
+pulsante = Button(27)
 
-print("Inizio test vibrazione...")
+print("Premi il pulsante per far vibrare il motore!")
+print("Rilascialo per fermarlo. Premi Ctrl+C per chiudere il programma.")
+
+# Colleghiamo gli eventi del pulsante direttamente ai comandi del motore
+pulsante.when_pressed = motore.on
+pulsante.when_released = motore.off
 
 try:
-    # Ripete il ciclo 3 volte
-    for i in range(3):
-        print("Motore ACCESO")
-        motore.on()   # Invia il segnale HIGH al pin IN
-        sleep(0.1)      # Attende 1 secondo
-        
-        print("Motore SPENTO")
-        motore.off()  # Invia il segnale LOW al pin IN
-        sleep(0.1)      # Attende 1 secondo
-
-    print("Test completato.")
-
+    # La funzione pause() mette il programma in "attesa infinita"
+    # senza consumare la CPU del Raspberry Pi.
+    # Il codice reagirà solo quando premi il pulsante.
+    pause()
 except KeyboardInterrupt:
-    # Se premi Ctrl+C, spegne il motore e chiude il programma in sicurezza
-    motore.off()
-    print("\nProgramma interrotto dall'utente.")
+    print("\nProgramma chiuso. Arrivederci!")
