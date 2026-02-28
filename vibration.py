@@ -11,11 +11,11 @@ try:
     for i in range(3):
         print("Motore ACCESO")
         motore.on()   # Invia il segnale HIGH al pin IN
-        sleep(1)      # Attende 1 secondo
+        sleep(0.2)      # Attende 1 secondo
         
         print("Motore SPENTO")
         motore.off()  # Invia il segnale LOW al pin IN
-        sleep(1)      # Attende 1 secondo
+        sleep(0.2)      # Attende 1 secondo
 
     print("Test completato.")
 
