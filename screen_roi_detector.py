@@ -45,6 +45,9 @@ BUTTON_GPIO = 27
 VIBE_CONFIRM_S = 0.15
 VIBE_ON_S = 0.15
 VIBE_OFF_S = 0.25
+VIBE_ERROR_DOT_S = 0.10
+VIBE_ERROR_DASH_S = 0.40
+VIBE_ERROR_GAP_S = 0.20
 # Workflow: si avvia al RILASCIO del pulsante; si può ricatturare solo dopo che
 # l'analisi OpenRouter è terminata E l'utente ha premuto di nuovo (arm) e rilasciato.
 # (Nessun debounce extra: la sequenza premuto→rilasciato→run→premuto→rilasciato è già robusta.)
@@ -53,9 +56,11 @@ VIBE_OFF_S = 0.25
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "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")
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-nano-12b-v2-vl:free")
 OPENROUTER_PROMPT = (
-    "analizza questa domanda e rispondi da 1 a 4 con la risposta corretta, "
-    "dove la 1 è quella più alta la 2 la seconda e cosi via, "
-    "rispondi solo con il numero della domanda"
+    "Questa è una foto di una domanda a risposta multipla. "
+    "Le risposte sono numerate dall'alto verso il basso: "
+    "la prima in alto è 1, la seconda è 2, la terza è 3, e così via. "
+    "Individua la risposta corretta e rispondi SOLO con il numero corrispondente, "
+    "senza spiegazioni né altro testo."
 )
 
 # ── Detection parameters ────────────────────────────────────────────
@@ -627,9 +632,24 @@ class ScreenROIDetector:
         except Exception:
             pass
 
+    def _vibrate_error(self):
+        """Pattern errore: . - (corto + lungo)."""
+        if self._motor is None:
+            return
+        try:
+            self._motor.on()
+            time.sleep(VIBE_ERROR_DOT_S)
+            self._motor.off()
+            time.sleep(VIBE_ERROR_GAP_S)
+            self._motor.on()
+            time.sleep(VIBE_ERROR_DASH_S)
+            self._motor.off()
+        except Exception:
+            pass
+
     def _vibrate_n_times(self, n: int):
-        """N vibrazioni brevi (risultato 1–4)."""
-        if self._motor is None or n not in (1, 2, 3, 4):
+        """N vibrazioni brevi (risultato 1–N)."""
+        if self._motor is None or n < 1 or n > 10:
             return
         try:
             for i in range(n):
@@ -643,16 +663,18 @@ class ScreenROIDetector:
 
     @staticmethod
     def _parse_result_count(result: str | None) -> int | None:
-        """Estrae un numero 1–4 dalla risposta OpenRouter."""
+        """Estrae un numero 1–10 dalla risposta OpenRouter."""
         if not result or not result.strip():
             return None
         s = result.strip()
-        numbers = re.findall(r'\b([1-4])\b', s)
-        if numbers:
-            return int(numbers[-1])
+        numbers = re.findall(r'\b(\d{1,2})\b', s)
+        for num_str in reversed(numbers):
+            n = int(num_str)
+            if 1 <= n <= 10:
+                return n
         try:
             n = int(s)
-            return n if 1 <= n <= 4 else None
+            return n if 1 <= n <= 10 else None
         except ValueError:
             return None
 
@@ -665,6 +687,7 @@ class ScreenROIDetector:
         frame = self.capture()
         if frame is None:
             print("[ERROR] Impossibile catturare. Controlla IP Webcam.")
+            self._vibrate_error()
             return
 
         print(f"[OK] Frame catturato: {frame.shape[1]}x{frame.shape[0]}")
@@ -676,7 +699,7 @@ class ScreenROIDetector:
             if not self._validate_corners(self.roi):
                 print("[!] ROI non valida (corner duplicati).")
                 cv2.imwrite("last_capture.jpg", frame)
-                self._vibrate_once()
+                self._vibrate_error()
                 return
 
             print("[OK] Schermo rilevato! Coordinate ROI:")
@@ -712,12 +735,13 @@ class ScreenROIDetector:
                     self._vibrate_n_times(n)
             else:
                 print("[!] Analisi OpenRouter fallita.")
+                self._vibrate_error()
         else:
             self.roi = None
             cv2.imwrite("last_capture.jpg", frame)
             print("[!] Schermo non rilevato. Immagine salvata senza ROI → last_capture.jpg")
             print("    Prova +/- per regolare la sensibilità.")
-            self._vibrate_once()
+            self._vibrate_error()
 
     # ── Perspective correction ──────────────────────────────────────
     @staticmethod
@@ -740,14 +764,12 @@ class ScreenROIDetector:
 
         # Ensure landscape orientation (width > height for monitors)
         if out_h > out_w:
-            # Swap if portrait, but keep the correct aspect
             out_w, out_h = out_h, out_w
-            # Reorder points for swapped dimensions
             dst = np.array([
-                [0,       0],
-                [0,       out_h - 1],
-                [out_w - 1, out_h - 1],
                 [out_w - 1, 0],
+                [out_w - 1, out_h - 1],
+                [0,         out_h - 1],
+                [0,         0],
             ], dtype=np.float32)
         else:
             dst = np.array([
@@ -762,6 +784,7 @@ class ScreenROIDetector:
 
         M = cv2.getPerspectiveTransform(src, dst)
         warped = cv2.warpPerspective(frame, M, (out_w, out_h))
+        warped = cv2.rotate(warped, cv2.ROTATE_180)
         return warped
 
     # ── Parameter management ──────────────────────────────────────────
