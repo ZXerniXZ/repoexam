@@ -34,7 +34,7 @@ except Exception:
 load_dotenv()
 
 # ── IP Webcam configuration ─────────────────────────────────────────
-IP_WEBCAM_IP   = "10.120.251.23"
+IP_WEBCAM_IP   = "10.22.179.8"
 IP_WEBCAM_PORT = 8080
 SHOT_URL = f"http://{IP_WEBCAM_IP}:{IP_WEBCAM_PORT}/shot.jpg"
 
