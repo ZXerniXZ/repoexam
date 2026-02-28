@@ -48,6 +48,8 @@ VIBE_OFF_S = 0.25
 # Pulsante invertito: True = trigger quando is_pressed diventa True (premuto),
 # False = trigger quando is_pressed diventa False (rilasciato)
 BUTTON_TRIGGER_ON_PRESSED = True
+# Secondi di attesa prima di accettare un nuovo trigger (anti-rimbalzo)
+BUTTON_DEBOUNCE_S = 2.0
 
 # ── OpenRouter configuration ─────────────────────────────────────────
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "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")
@@ -953,6 +955,7 @@ class ScreenROIDetector:
         print()
 
         last_trigger_state = False
+        last_trigger_time = 0.0
         need_prompt = True
         while True:
             if need_prompt:
@@ -969,8 +972,10 @@ class ScreenROIDetector:
                 if self._button is not None:
                     cur = self._button.is_pressed
                     active = cur if BUTTON_TRIGGER_ON_PRESSED else (not cur)
-                    if active and not last_trigger_state:
+                    now = time.time()
+                    if active and not last_trigger_state and (now - last_trigger_time) >= BUTTON_DEBOUNCE_S:
                         on_button_pressed()
+                        last_trigger_time = now
                     last_trigger_state = active
                 if cmd is None:
                     continue
